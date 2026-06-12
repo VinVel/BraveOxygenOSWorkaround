@@ -1,0 +1,99 @@
+name: Recompile Brave for OxygenOS
+
+on:
+  schedule:
+    - cron: "00 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BRAVE_REPO: brave/brave-browser
+  ORIGINAL_PACKAGE: com.brave.browser
+  NEW_PACKAGE: com.brave.browser_OOSW
+  APKTOOL_VERSION: 2.12.1
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      brave_tag: ${{ steps.check.outputs.brave_tag }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
+    steps:
+      - name: Check latest Brave release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          latest_json="$(gh api "repos/${BRAVE_REPO}/releases/latest")"
+          brave_tag="$(jq -r '.tag_name' <<<"${latest_json}")"
+          release_tag="oosw-${brave_tag}"
+
+          if gh release view "${release_tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${release_tag} already exists; nothing to do."
+            echo "should_build=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "New Brave release found: ${brave_tag}"
+            echo "should_build=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+          echo "brave_tag=${brave_tag}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+
+  recompile:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Install APKTool
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" \
+            -o "${RUNNER_TEMP}/apktool.jar"
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'exec java -jar "${RUNNER_TEMP}/apktool.jar" "$@"' \
+            > "${RUNNER_TEMP}/apktool"
+          chmod +x "${RUNNER_TEMP}/apktool"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      - name: Decode, rename, rebuild, and sign APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRAVE_TAG: ${{ needs.check.outputs.brave_tag }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: bash .github/scripts/recompile_brave_apks.sh
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRAVE_TAG: ${{ needs.check.outputs.brave_tag }}
+          RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release create "${RELEASE_TAG}" dist/*.apk \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Brave for OxygenOS ${BRAVE_TAG}" \
+            --notes "Automated rebuild of Brave ${BRAVE_TAG} with package name changed from \`${ORIGINAL_PACKAGE}\` to \`${NEW_PACKAGE}\` for OxygenOS split-screen compatibility testing."
