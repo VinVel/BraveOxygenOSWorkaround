@@ -18,6 +18,13 @@ for name in "${required_env[@]}"; do
   fi
 done
 
+for tool in apktool zipalign apksigner gh jq curl python3; do
+  if ! command -v "${tool}" >/dev/null 2>&1; then
+    echo "Missing required tool on PATH: ${tool}" >&2
+    exit 1
+  fi
+done
+
 KEY_PASSWORD="${KEY_PASSWORD:-${KEYSTORE_PASSWORD}}"
 
 apks=(
@@ -57,9 +64,15 @@ for apk in "${apks[@]}"; do
   output="dist/${base}_OOSW.apk"
 
   echo "Decoding ${apk}"
-  apktool d --force --output "${decoded}" "${download_dir}/${apk}"
+  apktool d --force --no-res --output "${decoded}" "${download_dir}/${apk}"
 
   echo "Renaming package in ${apk}: ${ORIGINAL_PACKAGE} -> ${NEW_PACKAGE}"
+  if grep -q '^renameManifestPackage:' "${decoded}/apktool.yml"; then
+    sed -i "s/^renameManifestPackage:.*/renameManifestPackage: ${NEW_PACKAGE}/" "${decoded}/apktool.yml"
+  else
+    printf '\nrenameManifestPackage: %s\n' "${NEW_PACKAGE}" >> "${decoded}/apktool.yml"
+  fi
+
   original_dot_re="${ORIGINAL_PACKAGE//./\\.}"
   original_slash="${ORIGINAL_PACKAGE//./\/}"
   new_slash="${NEW_PACKAGE//./\/}"
@@ -69,12 +82,20 @@ for apk in "${apks[@]}"; do
       -o -name "*.smali" \
       -o -name "*.yml" \
     \) -print0 \
-    | xargs -0 sed -i \
+    | while IFS= read -r -d '' file; do
+      if grep -Iq . "${file}"; then
+        sed -i \
         -e "s/${original_dot_re}/${NEW_PACKAGE}/g" \
-        -e "s#${original_slash}#${new_slash}#g"
+          -e "s#${original_slash}#${new_slash}#g" \
+          "${file}"
+      fi
+    done
 
   echo "Rebuilding ${apk}"
-  apktool b --use-aapt2 --output "${unsigned}" "${decoded}"
+  apktool b --output "${unsigned}" "${decoded}"
+
+  echo "Patching binary manifest package in ${apk}"
+  python3 .github/scripts/replace_axml_string.py "${unsigned}" "${ORIGINAL_PACKAGE}" "${NEW_PACKAGE}"
 
   echo "Aligning ${apk}"
   zipalign -f -p 4 "${unsigned}" "${aligned}"
@@ -89,4 +110,17 @@ for apk in "${apks[@]}"; do
     "${aligned}"
 
   apksigner verify --verbose "${output}"
+
+  if command -v aapt2 >/dev/null 2>&1; then
+    actual_package="$(aapt2 dump packagename "${output}")"
+    if [[ "${actual_package}" != "${NEW_PACKAGE}" ]]; then
+      echo "Package rename failed for ${output}: expected ${NEW_PACKAGE}, got ${actual_package}" >&2
+      exit 1
+    fi
+
+    if aapt2 dump xmltree "${output}" AndroidManifest.xml | grep -F "${ORIGINAL_PACKAGE}"; then
+      echo "Manifest still contains ${ORIGINAL_PACKAGE}; refusing to publish ${output}" >&2
+      exit 1
+    fi
+  fi
 done
