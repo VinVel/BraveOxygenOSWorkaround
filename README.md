@@ -1,5 +1,14 @@
 # Brave for OxygenOS
 
+This is an unofficial project. It is not affiliated with, endorsed by, reviewed
+by, or supported by Brave Software. The APKs produced by this workflow are
+rebuilt and user-signed test builds, not official Brave releases.
+
+Prefer the official Brave builds unless you specifically need this OxygenOS
+split-screen workaround. Do not report issues from these rebuilt APKs to Brave
+as official Brave build failures unless you can reproduce them with the official
+APK.
+
 This repository contains an automated GitHub Actions workflow that rebuilds the
 latest Brave stable Android APKs with a different application id:
 
@@ -10,6 +19,20 @@ com.brave.browser -> com.brave.browser_OOSW
 The package rename is intended as a workaround for OxygenOS/Oplus builds that
 block split-screen / flexible-window support for `com.brave.browser` while
 allowing the same Brave code under another package name.
+
+The repository is meant to make the workaround reproducible. If you fork it, use
+your own Android signing key and make it clear to users that they are installing
+an unofficial, user-signed browser build.
+
+## Licensing
+
+The scripts and workflow in this repository are licensed under MIT.
+
+The rebuilt APKs are not MIT-licensed. They are repackaged builds of Brave
+Browser and remain subject to Brave's upstream licenses, including MPL-2.0 and
+the third-party licenses included in Brave/Chromium. Brave trademarks, names,
+and logos remain property of Brave Software, Inc. These builds are unofficial
+and not endorsed by Brave.
 
 ## Workflow
 
@@ -48,12 +71,17 @@ ANDROID_KEY_PASSWORD
 
 Create the base64 keystore secret with:
 
+Linux:
 ```sh
-base64 -w 0 your-release-key.jks
+base64 -w 0 your-release-key.keystore > your-release-key-keystore-base64.txt
 ```
 
-On macOS, use:
-
+macOS:
 ```sh
-base64 -i your-release-key.jks
+base64 -i your-release-key.keystore > your-release-key-keystore-base64.txt
+```
+
+Windows:
+```pwsh
+[System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("your-release-key.keystore")) | New-Item your-release-key-keystore-base64.txt
 ```
